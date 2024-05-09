@@ -105,7 +105,8 @@ function loadtest() {
 
 $.views.converters("addslashes",addslashes);
 
-var apiuri = "https://api.oracleofthevoid.com";
+// var apiuri = "https://api.oracleofthevoid.com";
+var apiuri = "http://somosierra.flu:8000";
 // https://sweve5sd4d.execute-api.us-east-1.amazonaws.com
 var searchcache = {};
 // potential for language stuff:
