@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import urllib.parse
 from typing import Dict, List
 
+import typesense
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -316,21 +319,19 @@ async def attributes(request: Request):
                 {
                     "Shattered Empire": {
                         "Gathering Storm": ["Fixed"],
-                        "Cubic Zirconia Edition": ["Fixed"],
                         "Chaos Reigns I": ["Fixed"],
                         "Promotional&ndash;Shattered Empire": ["Promo"],
                     }
                 },
-                {"Special": {"Oracle of the Void": ["None"]}},
+                {
+                    "Special": {
+                        "Oracle of the Void": ["None"],
+                        "Cubic Zirconia Edition": ["Fixed"],
+                    }
+                },
             ]
         case _:
             breakpoint()
-
-
-import json
-import urllib.parse
-
-from fastapi import FastAPI, Request
 
 
 def get_query_params(body: bytes) -> dict[str, str]:
@@ -504,6 +505,19 @@ async def search(request: Request):
     query_params = get_query_params(await request.body())
     print(query_params)
 
+    search_query = {
+        "q": query_params["querystring"],
+        "query_by": query_params["table"],
+        "sort_by": query_params["sort"],
+        "per_page": query_params["size"],
+        "page": query_params["from"],
+    }
+
+    search_results = typesense_client.collections["l5r"].documents.search(search_query)
+
+    print(search_results)
+    breakpoint()
+
     return {
         "took": 1,
         "timed_out": False,
@@ -568,7 +582,21 @@ async def search(request: Request):
     }
 
 
+typesense_client: typesense.Client
+
+
 def main():
     import uvicorn
+
+    global typesense_client
+
+    typesense_client = typesense.Client(
+        {
+            "api_key": "xyz",
+            "nodes": [
+                {"host": "localhost", "port": "8108", "protocol": "http"},
+            ],
+        }
+    )
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
