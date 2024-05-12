@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import urllib.parse
-from typing import Dict, List
+from typing import Dict, List, Literal, TypedDict
 
 import typesense
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+import typesense.collection
 
 from . import mappings
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -335,7 +339,9 @@ async def attributes(request: Request):
 
 
 def get_query_params(body: bytes) -> dict[str, str]:
-    """b'querystring=hitomi&table=l5r&sort=%5B%7B%22title.keyword%22%3A%7B%22order%22%3A%22asc%22%7D%7D%5D&size=50&from=0'"""
+    """b'querystring=hitomi&table=l5r&sort=%5B%7B%22title.keyword%22%3A%7B%22order%22%3A%22asc%22%7D%7D%5D&size=50&from=0'
+    b'type_printing_set=select&field_printing_set=Chaos%20Reigns%20I&table=l5r&sort=%5B%7B%22title.keyword%22%3A%7B%22order%22%3A%22desc%22%7D%7D%5D&size=50&from=0'
+    """
     query_params = {}
     decoded_body = body.decode("utf-8")
     for param in decoded_body.split("&"):
@@ -347,11 +353,39 @@ def get_query_params(body: bytes) -> dict[str, str]:
     return query_params
 
 
+def convert(hit: dict) -> dict:
+    return {
+        "_index": "l5r",
+        "_type": "oracle-l5r_type",
+        "_id": f"cardid={hit['document']['cardid']}.0",
+        "_score": None,
+        "_ignored": ["honor"],
+        "_source": hit["document"],
+        "sort": [hit["document"]["formattedtitle"]],
+    }
+
+
 "/oracle-fetch?table=l5r&cardid=2850"
 
 
 @app.get("/oracle-fetch")
-async def oracle_fetch(table: str, cardid: int):
+async def oracle_fetch(table: str, cardid: str):
+    search_query = {
+        "q": cardid,
+        "query_by": "cardid",
+        "sort_by": "formattedtitle:asc",
+    }
+
+    search_results = collection.documents.search(search_query)
+
+    logger.info(search_results)
+    if not (found_elements := search_results["found"]):
+        return {}
+
+    hits = search_results["hits"]
+
+    return convert(hits[0])["_source"]
+
     return {
         "clan": ["Dragon"],
         "force": ["5"],
@@ -503,19 +537,120 @@ async def search(request: Request):
         }
     }"""
     query_params = get_query_params(await request.body())
-    print(query_params)
+    logger.info(query_params)
 
+    class Sort(TypedDict):
+        order: Literal["asc", "desc"]
+
+    def get_sort_by(sort: list[dict[str, Sort]]) -> str:
+        string_ = ""
+        for sorter in sort:
+            for key, value in sorter.items():
+                key = key.removesuffix(".keyword")
+
+                string_ += f"{key}:{value['order']},"
+        return string_
+
+    # {'querystring': 'toto', 'table': 'l5r', 'sort': [{'title.keyword': {'order': 'asc'}}], 'size': '50', 'from': '0'}
     search_query = {
         "q": query_params["querystring"],
-        "query_by": query_params["table"],
-        "sort_by": query_params["sort"],
+        "query_by": "formattedtitle",
+        "sort_by": "formattedtitle:asc",
         "per_page": query_params["size"],
         "page": query_params["from"],
     }
 
-    search_results = typesense_client.collections["l5r"].documents.search(search_query)
+    search_results = collection.documents.search(search_query)
 
-    print(search_results)
+    logger.info(search_results)
+    found_elements = search_results["found"]
+    hits = search_results["hits"]
+
+    return {
+        "took": 1,
+        "timed_out": False,
+        "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+        "hits": {
+            "total": found_elements,
+            "max_score": None,
+            "hits": [convert(x) for x in hits],
+        },
+    }
+
+    did = {
+        "facet_counts": [],
+        "found": 1,
+        "hits": [
+            {
+                "document": {
+                    "cardid": "TwentyFestivals114",
+                    "chi": ["4"],
+                    "clan": ["Phoenix"],
+                    "cost": ["8"],
+                    "deck": ["Dynasty"],
+                    "force": ["3"],
+                    "formattedtitle": "Agasha Tameko",
+                    "honor": ["4"],
+                    "id": "0",
+                    "imagehash": "ae/bf",
+                    "keywords": [],
+                    "ph": ["2"],
+                    "printing": [
+                        {
+                            "artist": [""],
+                            "artnumber": [""],
+                            "number": ["114"],
+                            "printimagehash": ["ae/bf"],
+                            "printingid": "1",
+                            "rarity": ["Fixed"],
+                            "set": ["Twenty Festivals"],
+                            "text": [""],
+                        }
+                    ],
+                    "printingprimary": "1",
+                    "puretexttitle": "Agasha Tameko",
+                    "text": [
+                        "Commander &#8226; Water &#8226; Shugenja &#8226; Soul of Agasha Tomioko <br><b>Water Interrupt</b>: After the action Equips a Spell to Tameko, take an additional action."
+                    ],
+                    "title": ["Agasha Tameko"],
+                    "type": ["Personality"],
+                },
+                "highlight": {
+                    "formattedtitle": {
+                        "matched_tokens": ["Agasha"],
+                        "snippet": "<mark>Agasha</mark> Tameko",
+                    }
+                },
+                "highlights": [
+                    {
+                        "field": "formattedtitle",
+                        "matched_tokens": ["Agasha"],
+                        "snippet": "<mark>Agasha</mark> Tameko",
+                    }
+                ],
+                "text_match": 578730123365187705,
+                "text_match_info": {
+                    "best_field_score": "1108091338752",
+                    "best_field_weight": 15,
+                    "fields_matched": 1,
+                    "num_tokens_dropped": 0,
+                    "score": "578730123365187705",
+                    "tokens_matched": 1,
+                    "typo_prefix_score": 0,
+                },
+            }
+        ],
+        "out_of": 1,
+        "page": 1,
+        "request_params": {
+            "collection_name": "l5r",
+            "first_q": "Agasha",
+            "per_page": 50,
+            "q": "Agasha",
+        },
+        "search_cutoff": False,
+        "search_time_ms": 0,
+    }
     breakpoint()
 
     return {
@@ -583,12 +718,15 @@ async def search(request: Request):
 
 
 typesense_client: typesense.Client
+collection: typesense.collection.Collection
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
+
     import uvicorn
 
-    global typesense_client
+    global typesense_client, collection
 
     typesense_client = typesense.Client(
         {
@@ -598,5 +736,9 @@ def main():
             ],
         }
     )
+    logger.info("Connected to Typesense")
+
+    collection = typesense_client.collections["l5r"]
+    logger.info(collection.retrieve())
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
