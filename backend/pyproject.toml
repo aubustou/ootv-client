@@ -27,6 +27,7 @@ dev = [
 
 [project.scripts]
 run-server = "backend.main:main"
+ingestor = "backend.ingestor:main"
 
 [tool.setuptools.packages]
 find = {namespaces = false}

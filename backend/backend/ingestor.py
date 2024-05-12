@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 from pathlib import Path
 from typing import TypedDict
 
 import lxml.etree as ET
 import typesense
+
+from .mappings import (
+    CLAN_MAPPING,
+    DECK_MAPPING,
+    EXTENSION_MAPPING,
+    RARITY_MAPPING,
+    TYPE_MAPPING,
+)
+
+logger = logging.getLogger(__name__)
 
 client: typesense.Client
 
@@ -63,88 +74,95 @@ def init_client() -> None:
 		<honor_req>-</honor_req>
 	</card>
 """
-TYPE_MAPPING = {
-    "ancestor": "Ancestor",
-    "celestial": "Celestial",
-    "clock": "Clock",
-    "event": "Event",
-    "follower": "Follower",
-    "holding": "Holding",
-    "item": "Item",
-    "other": "Other",
-    "personality": "Personality",
-    "proxy": "Proxy",
-    "region": "Region",
-    "ring": "Ring",
-    "sensei": "Sensei",
-    "spell": "Spell",
-    "strategy": "Strategy",
-    "stronghold": "Stronghold",
-    "territory": "Territory",
-    "wind": "Wind",
-}
 
-DECK_MAPPING = {
-    "Dynasty": {"celestial", "event", "holding", "personality", "region"},
-    "Fate": {"ancestor", "follower", "item", "ring", "spell", "strategy"},
-    "Other": {"other", "clock", "territory", "proxy"},
-    "Pre-Game": {"stronghold", "sensei", "wind"},
-}
+
+NUMBER_PATTERN = re.compile(r"(\d+)")
+
+
+def get_printing(xml_item: ET.Element) -> list[dict[str, str]]:
+    """Get the printing information of a card. Example with Goju Hitomi"""
+    xml_printings = xml_item.findall("image")
+    if not (xml_rarity := xml_item.find("rarity")):
+        rarity = "f"
+    else:
+        rarity = xml_rarity.text
+
+    printings = []
+    for index, xml_printing in enumerate(xml_printings, start=1):
+        if not (edition := EXTENSION_MAPPING.get(xml_printing.attrib["edition"])):
+            continue
+
+        number = NUMBER_PATTERN.search(Path(xml_printing.text).stem).group(1)
+
+        printing = {
+            "set": [edition],
+            "printingid": f"{index }",
+            "artist": [""],
+            "artnumber": [""],
+            "number": [number],
+            "rarity": [RARITY_MAPPING[rarity]],
+            "text": [""],
+            "printimagehash": ["ae/bf"],
+        }
+        printings.append(printing)
+
+    return printings
 
 
 def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
     """Convert an XML element into a dictionary. Example with Goju Hitomi"""
-    breakpoint()
-    card_id = xml_item.attrib["id"]
     card_type = xml_item.attrib["type"]
-    card_name = xml_item.find("name").text
-    printings = xml_item.findall("edition")
-    clans = xml_item.findall("clan")
-    rarities = xml_item.findall("rarity")
+    if card_type != "personality":
+        return {}
+
     legalities = xml_item.findall("legal")
+    if not any(x.text in {"onyx", "shattered_empire"} for x in legalities):
+        return {}
+
+    for deck, values in DECK_MAPPING.items():
+        if card_type in values:
+            card_deck = deck
+            break
+    else:
+        raise KeyError("Deck not found")
+
+    card_name = xml_item.find("name").text
+    logger.info("Processing card %s", card_name)
+
+    card_id = xml_item.attrib["id"]
+    card_type = TYPE_MAPPING[xml_item.attrib["type"]]
+
+    force = xml_item.find("force").text
+    chi = xml_item.find("chi").text
+    personal_honor = xml_item.find("personal_honor").text
+    cost = xml_item.find("cost").text
+    honor_req = xml_item.find("honor_req").text
+
+    clans = [CLAN_MAPPING[x.text] for x in xml_item.findall("clan")]
+
+    text = xml_item.find("text").text
+    keywords = []
+
+    printings = get_printing(xml_item)
 
     card = {
-        "clan": ["Dragon"],
-        "force": ["5"],
-        "@SequenceNumber": "0000",
-        "deck": ["Dynasty"],
+        "clan": clans,
+        "force": [force],
+        "deck": [card_deck],
         "printingprimary": "1",
-        "chi": ["5"],
+        "chi": [chi],
         "imagehash": "ae/bf",
-        "title": ["Goju Hitomi"],
-        "formattedtitle": "Goju Hitomi &#149; Experienced 3KYD",
-        "printing": [
-            {
-                "set": ["1,000 Years of Darkness"],
-                "printingid": "1",
-                "artist": ["William O'Connor"],
-                "artnumber": ["3048"],
-                "number": ["22"],
-                "rarity": ["Fixed"],
-                "text": [
-                    "Hitomi may attach the Obsidian Hand without Gold cost.<br>Hitomi may cast Kihos as though she were a Shugenja. Kihos cast in this way produce Ninja effects instead of Spell effects.<br>Limited: Once per turn, get a Tattoo or Kiho card from your Fate deck and put it in your hand. Shuffle your deck."
-                ],
-                "printimagehash": ["ae/bf"],
-            }
-        ],
-        "text": [
-            "Attaches The Obsidian Hand ignoring Gold cost.<br>Hitomi may perform Kiho actions as if she were a Shugenja, and when she performs a Kiho action, it is considered a Ninja action instead of a Kiho action when targeting it and resolving its effects.<br><b>Limited:</b> Search your Fate deck for a Tattoo or Kiho Strategy and put it in your hand."
-        ],
-        "@timestamp": "2022-05-23T15:37:41.250121",
-        "cardid": 2850,
-        "keywords": [
-            "<b>Experienced 3KYD Mirumoto Hitomi</b>",
-            "<b>Unique</b>",
-            "Dragon Clan",
-            "Ninja",
-            "Samurai",
-            "Tattooed",
-        ],
-        "ph": ["1"],
-        "type": ["Personality"],
-        "honor": ["-"],
-        "puretexttitle": "Goju Hitomi - exp3KYD",
-        "cost": ["15"],
+        "title": [card_name],
+        "formattedtitle": card_name,
+        "printing": printings,
+        "text": [text],
+        "cardid": card_id,
+        "keywords": keywords,
+        "ph": [personal_honor],
+        "type": [card_type],
+        "honor": [honor_req],
+        "puretexttitle": card_name,
+        "cost": [cost],
     }
 
     return card
@@ -284,44 +302,12 @@ class ExpectedCard(TypedDict):
     cost: list[str]
 
 
-def from_xml_to_dict(card: ET.Element) -> ExpectedCard:
-    return {
-        "clan": card.xpath("clan/text()"),
-        "force": card.xpath("force/text()"),
-        "deck": card.xpath("deck/text()"),
-        "printingprimary": card.xpath("printingprimary/text()"),
-        "chi": card.xpath("chi/text()"),
-        "imagehash": card.xpath("imagehash/text()"),
-        "title": card.xpath("title/text()"),
-        "formattedtitle": card.xpath("formattedtitle/text()"),
-        "printing": [
-            {
-                "set": card.xpath("set/text()"),
-                "printingid": card.xpath("printingid/text()"),
-                "artist": card.xpath("artist/text()"),
-                "artnumber": card.xpath("artnumber/text()"),
-                "number": card.xpath("number/text()"),
-                "rarity": card.xpath("rarity/text()"),
-                "text": card.xpath("text/text()"),
-                "printimagehash": card.xpath("printimagehash/text()"),
-            }
-        ],
-        "text": card.xpath("text/text()"),
-        "cardid": card.xpath("cardid/text()"),
-        "keywords": card.xpath("keywords/text()"),
-        "ph": card.xpath("ph/text()"),
-        "type": card.xpath("type/text()"),
-        "honor": card.xpath("honor/text()"),
-        "puretexttitle": card.xpath("puretexttitle/text()"),
-        "cost": card.xpath("cost/text()"),
-    }
-
-
-def create_collection(documents: ET.tree, overwrite: bool = False) -> None:
+def create_collection(documents: ET.tree, overwrite: bool = True) -> None:
     """Turn a XML schema into a Typesense schema"""
     schema = {
         "name": "l5r",
         "fields": [
+            {"name": "id", "type": "int32", "facet": True},
             {"name": "type", "type": "string[]", "facet": True},
             {
                 "name": "formattedtitle",
@@ -334,7 +320,6 @@ def create_collection(documents: ET.tree, overwrite: bool = False) -> None:
             # {"name": "cost", "type": "int32", "facet": True},
             # {"name": "focus", "type": "int32", "facet": True},
         ],
-        "default_sorting_field": "formattedtitle",
     }
     try:
         client.collections.create(schema)
@@ -348,6 +333,10 @@ def create_collection(documents: ET.tree, overwrite: bool = False) -> None:
             logging.info("Collection %s created", schema["name"])
 
     for card in documents.findall("card"):
+        card_dict = xml_to_dict(card)
+
+        if not card_dict:
+            continue
 
         try:
             client.collections[schema["name"]].documents.create(card_dict)

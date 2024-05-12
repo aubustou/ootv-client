@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from typing import Dict, List
+
 from fastapi import FastAPI, Request
-from pydantic import BaseModel, Field
-from typing import List, Dict
-
-
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
+from . import mappings
 
 app = FastAPI()
 
@@ -57,6 +57,7 @@ async def updatelog(table: str, limit: int, fetchcards: bool):
         },
     }
 
+
 def get_attributes_query_params(body: bytes) -> dict[str, str]:
     """b'table=l5r&lookup=deck&optgroup=1'"""
     query_params = {}
@@ -66,6 +67,7 @@ def get_attributes_query_params(body: bytes) -> dict[str, str]:
         query_params[key] = urllib.parse.unquote(value)
 
     return query_params
+
 
 @app.post("/attributes")
 async def attributes(request: Request):
@@ -93,50 +95,13 @@ async def attributes(request: Request):
                 {"Misc": ["Not&nbsp;Legal&nbsp;(Proxy)", "Unreleased"]},
             ]
         case "printing.rarity":
-            return ["Common", "Fixed", "None", "Premium", "Promo", "Rare", "Uncommon"]
+            return list(mappings.RARITY_MAPPING.values())
         case "type":
-            return [
-                "Ancestor",
-                "Celestial",
-                "Clock",
-                "Event",
-                "Follower",
-                "Holding",
-                "Item",
-                "Other",
-                "Personality",
-                "Proxy",
-                "Region",
-                "Ring",
-                "Sensei",
-                "Spell",
-                "Strategy",
-                "Stronghold",
-                "Territory",
-                "Wind",
-            ]
+            return list(mappings.TYPE_MAPPING.values())
         case "deck":
-            return ["Dynasty", "Fate", "Other", "Pre-Game"]
+            return list(mappings.DECK_MAPPING.keys())
         case "clan":
-            return [
-                "Brotherhood of Shinsei",
-                "Crab",
-                "Crane",
-                "Dragon",
-                "Lion",
-                "Mantis",
-                "Naga",
-                "Ninja",
-                "Phoenix",
-                "Ratling",
-                "Scorpion",
-                "Shadowlands",
-                "Spider",
-                "Spirit",
-                "Toturi's Army",
-                "Unaligned",
-                "Unicorn",
-            ]
+            return list(mappings.CLAN_MAPPING.values())
         case "printing.set:printing.rarity":
             return [
                 {
@@ -352,7 +317,7 @@ async def attributes(request: Request):
                     "Shattered Empire": {
                         "Gathering Storm": ["Fixed"],
                         "Cubic Zirconia Edition": ["Fixed"],
-                        "Chaos Rising I": ["Fixed"],
+                        "Chaos Reigns I": ["Fixed"],
                         "Promotional&ndash;Shattered Empire": ["Promo"],
                     }
                 },
@@ -362,9 +327,10 @@ async def attributes(request: Request):
             breakpoint()
 
 
-from fastapi import FastAPI, Request
-import urllib.parse
 import json
+import urllib.parse
+
+from fastapi import FastAPI, Request
 
 
 def get_query_params(body: bytes) -> dict[str, str]:
