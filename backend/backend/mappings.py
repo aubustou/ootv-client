@@ -49,7 +49,7 @@ CLAN_MAPPING = {
 
 EXTENSION_MAPPING = {
     "TwentyFestivals": "Twenty Festivals",
-    "TA": "Thunderous Acclaim",
+    "ThA": "Thunderous Acclaim",
     "SCW": "Siege: Clan War",
     "EP": "Evil Portents",
     "TBS": "The Blackest Storm",
@@ -71,4 +71,10 @@ RARITY_MAPPING = {
     "p": "Promo",
     "P": "Premium",
     "n": "None",
+}
+
+LEGALITY_MAPPING = {
+    "open": "Open",
+    "onyx": "Onyx",
+    "shattered_empire": "Shattered Empire",
 }

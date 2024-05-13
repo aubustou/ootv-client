@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import shutil
 from pathlib import Path
 from typing import TypedDict
 
@@ -13,6 +14,7 @@ from .mappings import (
     CLAN_MAPPING,
     DECK_MAPPING,
     EXTENSION_MAPPING,
+    LEGALITY_MAPPING,
     RARITY_MAPPING,
     TYPE_MAPPING,
 )
@@ -75,12 +77,49 @@ def init_client() -> None:
 	</card>
 """
 
+IMAGE_FOLDER = Path(r"E:/L5R/L5R/L5R CCG Image Packs/")
+OUTPUT_FOLDER = Path(r"E:/L5R/L5R/Oracle/")
+
+import PIL.Image as Image
+
+
+def get_image_path(
+    card_id: str, image_name: str, edition_acronym_: str, number: str, index: int
+) -> None:
+    output_folder = OUTPUT_FOLDER / edition_acronym_ / number
+    details_path = output_folder / f"printing_{card_id}_{index}_details.jpg"
+    select_path = output_folder / f"printing_{card_id}_{index}_select.jpg"
+
+    if details_path.exists() and select_path.exists():
+        return None
+
+    if not (path := next(IMAGE_FOLDER.rglob(f"{image_name}.*"), None)):
+        if not (
+            path := next(IMAGE_FOLDER.rglob(f"{image_name.replace('_', '')}.*"), None)
+        ):
+            logger.warning("Image %s not found", image_name)
+            breakpoint()
+            return None
+
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    # Convert to JPG
+    image = Image.open(path)
+    if image.mode == "RGBA":
+        image = image.convert("RGB")
+    image.save(details_path)
+
+    # Resize to 150*210
+    image.thumbnail((150, 210))
+    image.save(select_path)
+
 
 NUMBER_PATTERN = re.compile(r"(\d+)")
 
 
-def get_printing(xml_item: ET.Element) -> list[dict[str, str]]:
+def get_printing(xml_item: ET.Element, card_id: str) -> list[dict[str, str]]:
     """Get the printing information of a card. Example with Goju Hitomi"""
+
     xml_printings = xml_item.findall("image")
     if not (xml_rarity := xml_item.find("rarity")):
         rarity = "f"
@@ -89,10 +128,17 @@ def get_printing(xml_item: ET.Element) -> list[dict[str, str]]:
 
     printings = []
     for index, xml_printing in enumerate(xml_printings, start=1):
-        if not (edition := EXTENSION_MAPPING.get(xml_printing.attrib["edition"])):
+        edition_acronym = xml_printing.attrib["edition"]
+
+        if not (edition := EXTENSION_MAPPING.get(edition_acronym)):
             continue
 
-        number = NUMBER_PATTERN.search(Path(xml_printing.text).stem).group(1)
+        image_name = Path(xml_printing.text).stem
+
+        number = NUMBER_PATTERN.search(image_name).group(1)
+        logger.info("Processing printing %s from edition %s", number, edition)
+
+        get_image_path(card_id, image_name, edition_acronym, number, index)
 
         printing = {
             "set": [edition],
@@ -102,11 +148,50 @@ def get_printing(xml_item: ET.Element) -> list[dict[str, str]]:
             "number": [number],
             "rarity": [RARITY_MAPPING[rarity]],
             "text": [""],
-            "printimagehash": ["ae/bf"],
+            "printimagehash": [f"{edition_acronym}/{number}"],
         }
         printings.append(printing)
 
     return printings
+
+
+TOKEN_REPLACEMENTS = [
+    ("[BOW]", ":bow:"),
+    ("[FAVOR]", ":favor:"),
+]
+PAY_PATTERN = re.compile(r"\[PAY ([\d*]+)\]")
+
+
+def convert_text(text: str, card_type: str) -> tuple[str, list[str]]:
+    if card_type == "Personality":
+        parts = text.split("<br>", maxsplit=1)
+        if len(parts) == 2:
+            keywords_, text = parts
+        else:
+            text = ""
+            keywords_ = parts[0]
+        keywords = keywords_.split("&#8226;")
+    else:
+        keywords = []
+    for token, replacement in TOKEN_REPLACEMENTS:
+        text = text.replace(token, replacement)
+
+    if "[PAY " in text:
+        text = PAY_PATTERN.sub(r":g\1:", text)
+
+    text = text.strip()
+
+    keywords_ = []
+    for keyword in keywords:
+        # Remove HTML tags
+        keyword = re.sub(r"<[^>]+>", "", keyword)
+        keyword = keyword.strip()
+        if keyword:
+            keywords_.append(keyword)
+
+    keywords = keywords_
+
+    return text, keywords
 
 
 def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
@@ -115,8 +200,16 @@ def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
     if card_type != "personality":
         return {}
 
-    legalities = xml_item.findall("legal")
-    if not any(x.text in {"onyx", "shattered_empire"} for x in legalities):
+    legalities = []
+    has_onyx = False
+    for legality in xml_item.findall("legal"):
+        legality_text = legality.text
+        if legality_text in {"onyx", "shattered_empire"}:
+            has_onyx = True
+        if legality := LEGALITY_MAPPING.get(legality_text):
+            legalities.append(legality)
+
+    if not has_onyx:
         return {}
 
     for deck, values in DECK_MAPPING.items():
@@ -140,30 +233,33 @@ def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
 
     clans = [CLAN_MAPPING[x.text] for x in xml_item.findall("clan")]
 
-    text = xml_item.find("text").text
-    keywords = []
+    text, keywords = convert_text(xml_item.find("text").text, card_type)
 
-    printings = get_printing(xml_item)
+    printings = get_printing(xml_item, card_id)
 
-    card = {
-        "clan": clans,
-        "force": [force],
-        "deck": [card_deck],
-        "printingprimary": "1",
-        "chi": [chi],
-        "imagehash": "ae/bf",
-        "title": [card_name],
-        "formattedtitle": card_name,
-        "printing": printings,
-        "text": [text],
-        "cardid": card_id,
-        "keywords": keywords,
-        "ph": [personal_honor],
-        "type": [card_type],
-        "honor": [honor_req],
-        "puretexttitle": card_name,
-        "cost": [cost],
-    }
+    try:
+        card = {
+            "clan": clans,
+            "force": [force],
+            "deck": [card_deck],
+            "printingprimary": str(printings[0]["printingid"]),
+            "chi": [chi],
+            "imagehash": printings[0]["printimagehash"][0],
+            "title": [card_name],
+            "formattedtitle": card_name,
+            "printing": printings,
+            "text": [text],
+            "cardid": card_id,
+            "keywords": keywords,
+            "ph": [personal_honor],
+            "type": [card_type],
+            "honor": [honor_req],
+            "puretexttitle": card_name,
+            "cost": [cost],
+            "legality": legalities,
+        }
+    except IndexError:
+        breakpoint()
 
     return card
 
@@ -312,7 +408,19 @@ def create_collection(documents: ET.tree, overwrite: bool = True) -> None:
             {
                 "name": "formattedtitle",
                 "type": "string",
+                "sort": True,
             },
+            {
+                "name": "title",
+                "type": "string[]",
+            },
+            {
+                "name": "cardid",
+                "type": "string",
+            },
+            {"name": "keywords", "type": "string[]", "facet": True},
+            {"name": "clan", "type": "string[]", "facet": True},
+            {"name": "legality", "type": "string[]", "facet": True},
             # {"name": "rarity", "type": "string", "facet": True},
             # {"name": "edition", "type": "string", "facet": True},
             # {"name": "image", "type": "string",},
