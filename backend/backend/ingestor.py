@@ -163,7 +163,7 @@ PAY_PATTERN = re.compile(r"\[PAY ([\d*]+)\]")
 
 
 def convert_text(text: str, card_type: str) -> tuple[str, list[str]]:
-    if card_type == "Personality":
+    if card_type in {"Personality", "Sensei"}:
         parts = text.split("<br>", maxsplit=1)
         if len(parts) == 2:
             keywords_, text = parts
@@ -173,31 +173,30 @@ def convert_text(text: str, card_type: str) -> tuple[str, list[str]]:
         keywords = keywords_.split("&#8226;")
     else:
         keywords = []
+
     for token, replacement in TOKEN_REPLACEMENTS:
         text = text.replace(token, replacement)
 
     if "[PAY " in text:
         text = PAY_PATTERN.sub(r":g\1:", text)
 
-    text = text.strip()
+    text = text.strip().removeprefix("<br>").strip()
 
-    keywords_ = []
+    cleaned_keywords: list[str] = []
     for keyword in keywords:
         # Remove HTML tags
         keyword = re.sub(r"<[^>]+>", "", keyword)
         keyword = keyword.strip()
         if keyword:
-            keywords_.append(keyword)
+            cleaned_keywords.append(keyword)
 
-    keywords = keywords_
-
-    return text, keywords
+    return text, cleaned_keywords
 
 
 def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
     """Convert an XML element into a dictionary. Example with Goju Hitomi"""
     card_type = xml_item.attrib["type"]
-    if card_type != "personality":
+    if card_type not in {"holding", "personality", "sensei"}:
         return {}
 
     legalities = []
@@ -225,41 +224,61 @@ def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
     card_id = xml_item.attrib["id"]
     card_type = TYPE_MAPPING[xml_item.attrib["type"]]
 
-    force = xml_item.find("force").text
-    chi = xml_item.find("chi").text
-    personal_honor = xml_item.find("personal_honor").text
-    cost = xml_item.find("cost").text
-    honor_req = xml_item.find("honor_req").text
-
-    clans = [CLAN_MAPPING[x.text] for x in xml_item.findall("clan")]
-
     text, keywords = convert_text(xml_item.find("text").text, card_type)
-
     printings = get_printing(xml_item, card_id)
 
-    try:
-        card = {
-            "clan": clans,
-            "force": [force],
-            "deck": [card_deck],
-            "printingprimary": str(printings[0]["printingid"]),
-            "chi": [chi],
-            "imagehash": printings[0]["printimagehash"][0],
-            "title": [card_name],
-            "formattedtitle": card_name,
-            "printing": printings,
-            "text": [text],
-            "cardid": card_id,
-            "keywords": keywords,
-            "ph": [personal_honor],
-            "type": [card_type],
-            "honor": [honor_req],
-            "puretexttitle": card_name,
-            "cost": [cost],
-            "legality": legalities,
-        }
-    except IndexError:
-        breakpoint()
+    card = {
+        "printingprimary": str(printings[0]["printingid"]),
+        "imagehash": printings[0]["printimagehash"][0],
+        "title": [card_name],
+        "formattedtitle": card_name,
+        "printing": printings,
+        "legality": legalities,
+        "type": [card_type],
+        "cardid": card_id,
+        "puretexttitle": card_name,
+        "deck": [card_deck],
+        "text": [text],
+        "keywords": keywords,
+    }
+    match card_type:
+        case "Holding":
+            if (xml_gold_production := xml_item.find("gold_production")) is not None:
+                gold_production = xml_gold_production.text
+            else:
+                gold_production = ""
+
+            card.update(
+                {
+                    "clan": [],
+                    "cost": [xml_item.find("cost").text],
+                    "production": [gold_production],
+                }
+            )
+        case "Personality":
+            card.update(
+                {
+                    "clan": [CLAN_MAPPING[x.text] for x in xml_item.findall("clan")],
+                    "force": [xml_item.find("force").text],
+                    "chi": [xml_item.find("chi").text],
+                    "ph": [xml_item.find("personal_honor").text],
+                    "honor": [xml_item.find("honor_req").text],
+                    "cost": [xml_item.find("cost").text],
+                }
+            )
+        case "Sensei":
+            if "All Clans" in keywords:
+                clans = list(CLAN_MAPPING.values())
+            else:
+                clans = [x.removesuffix(" Clan") for x in keywords]
+            card.update(
+                {
+                    "clan": clans,
+                    "production": [xml_item.find("gold_production").text],
+                    "startinghonor": [xml_item.find("starting_honor").text],
+                    "strength": [xml_item.find("province_strength").text],
+                }
+            )
 
     return card
 
