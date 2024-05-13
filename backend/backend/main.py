@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import urllib.parse
-from typing import Dict, List, Literal, TypedDict
+from typing import Any, Dict, List, Literal, TypedDict
 
 import typesense
+import typesense.collection
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import typesense.collection
 
 from . import mappings
 
@@ -35,15 +35,6 @@ app.add_middleware(
     allow_methods=["*"],  # Autoriser toutes les méthodes
     allow_headers=["*"],  # Autoriser tous les headers
 )
-
-
-class SearchQuery(BaseModel):
-    type_title: str
-    field_title: str
-    table: str
-    sort: List[Dict[str, Dict[str, str]]]
-    size: int
-    from_: int = Field(..., alias="from")
 
 
 @app.get("/updatelog")
@@ -335,22 +326,87 @@ async def attributes(request: Request):
                 },
             ]
         case _:
-            breakpoint()
+            logger.error("Unknown lookup %s", query["lookup"])
+            return []
 
 
-def get_query_params(body: bytes) -> dict[str, str]:
+class QueryParams(TypedDict):
+    querystring: str
+    table: str
+    sort: list[dict[str, dict[str, str]]]
+    size: str
+    from_: str
+
+
+class SearchQuery(TypedDict):
+    q: str
+    filter_by: str
+    query_by: str
+    sort_by: str
+    per_page: str
+    page: str
+
+
+FilterBy = dict[str, Any]
+
+
+def get_query_params(params: dict[str, Any]) -> tuple[str, str]:
+    querystring = "*"
+    filters: list[str] = []
+    for key, value in params.items():
+        match key:
+            case "field_title" | "querystring":
+                querystring = value
+            case "field_keywords":
+                if isinstance(value, list):
+                    filters.extend([f"keywords:=[{x}]" for x in value])
+                else:
+                    filters.append(f"keywords:=[{value}]")
+            case "field_clan":
+                if isinstance(value, list):
+                    filters.extend([f"clan:=[{x}]" for x in value])
+                else:
+                    filters.append(f"clan:=[{value}]")
+            case "field_legality":
+                if isinstance(value, list):
+                    filters.extend(
+                        [f"legality:=[{x.replace('&nbsp;', ' ')}]" for x in value]
+                    )
+                else:
+                    filters.append(f"legality:=[{value.replace('&nbsp;', ' ')}]")
+
+    return querystring, " && ".join(filters)
+
+
+def get_search_params(body: bytes) -> SearchQuery:
     """b'querystring=hitomi&table=l5r&sort=%5B%7B%22title.keyword%22%3A%7B%22order%22%3A%22asc%22%7D%7D%5D&size=50&from=0'
     b'type_printing_set=select&field_printing_set=Chaos%20Reigns%20I&table=l5r&sort=%5B%7B%22title.keyword%22%3A%7B%22order%22%3A%22desc%22%7D%7D%5D&size=50&from=0'
+    {'type_title': 'text', 'field_title': 'Gusai ', 'table': 'l5r', 'sort': [{'title.keyword': {'order': 'asc'}}], 'size': '50', 'from': '0'}
     """
-    query_params = {}
+    decoded_params = {}
     decoded_body = body.decode("utf-8")
     for param in decoded_body.split("&"):
         key, value = param.split("=")
-        query_params[key] = urllib.parse.unquote(value)
+        decoded_params[key] = urllib.parse.unquote(value)
         if key == "sort":
-            query_params[key] = json.loads(query_params[key])
+            decoded_params[key] = json.loads(decoded_params[key])
 
-    return query_params
+    logger.info(decoded_params)
+
+    querystring, filters = get_query_params(decoded_params)
+
+    search_query = SearchQuery(
+        q=querystring,
+        filter_by=filters,
+        query_by="formattedtitle",
+        sort_by="formattedtitle:asc",
+        limit=decoded_params["size"],
+        offset=decoded_params["from"],
+    )
+
+    logger.info(search_query)
+
+    return search_query
 
 
 def convert(hit: dict) -> dict:
@@ -363,9 +419,6 @@ def convert(hit: dict) -> dict:
         "_source": hit["document"],
         "sort": [hit["document"]["formattedtitle"]],
     }
-
-
-"/oracle-fetch?table=l5r&cardid=2850"
 
 
 @app.get("/oracle-fetch")
@@ -386,179 +439,10 @@ async def oracle_fetch(table: str, cardid: str):
 
     return convert(hits[0])["_source"]
 
-    return {
-        "clan": ["Dragon"],
-        "force": ["5"],
-        "@SequenceNumber": "0000",
-        "deck": ["Dynasty"],
-        "printingprimary": "1",
-        "chi": ["5"],
-        "imagehash": "ae/bf",
-        "title": ["Goju Hitomi"],
-        "formattedtitle": "Goju Hitomi &#149; Experienced 3KYD",
-        "printing": [
-            {
-                "set": ["1,000 Years of Darkness"],
-                "printingid": "1",
-                "artist": ["William O'Connor"],
-                "artnumber": ["3048"],
-                "number": ["22"],
-                "rarity": ["Fixed"],
-                "text": [
-                    "Hitomi may attach the Obsidian Hand without Gold cost.<br>Hitomi may cast Kihos as though she were a Shugenja. Kihos cast in this way produce Ninja effects instead of Spell effects.<br>Limited: Once per turn, get a Tattoo or Kiho card from your Fate deck and put it in your hand. Shuffle your deck."
-                ],
-                "printimagehash": ["ae/bf"],
-            }
-        ],
-        "text": [
-            "Attaches The Obsidian Hand ignoring Gold cost.<br>Hitomi may perform Kiho actions as if she were a Shugenja, and when she performs a Kiho action, it is considered a Ninja action instead of a Kiho action when targeting it and resolving its effects.<br><b>Limited:</b> Search your Fate deck for a Tattoo or Kiho Strategy and put it in your hand."
-        ],
-        "@timestamp": "2022-05-23T15:37:41.250121",
-        "cardid": 2850,
-        "keywords": [
-            "<b>Experienced 3KYD Mirumoto Hitomi</b>",
-            "<b>Unique</b>",
-            "Dragon Clan",
-            "Ninja",
-            "Samurai",
-            "Tattooed",
-        ],
-        "ph": ["1"],
-        "type": ["Personality"],
-        "honor": ["-"],
-        "puretexttitle": "Goju Hitomi - exp3KYD",
-        "cost": ["15"],
-    }
-
 
 @app.post("/search")
 async def search(request: Request):
-    """Must return a JSON object with the following structure:
-        {
-        "took": 1,
-        "timed_out": false,
-        "_shards": {
-            "total": 1,
-            "successful": 1,
-            "skipped": 0,
-            "failed": 0
-        },
-        "hits": {
-            "total": 45,
-            "max_score": null,
-            "hits": [
-                {
-                    "_index": "l5r-addlogupdate2",
-                    "_type": "oracle-l5r_type",
-                    "_id": "cardid=2850.0",
-                    "_score": null,
-                    "_ignored": [
-                        "honor"
-                    ],
-                    "_source": {
-                        "clan": [
-                            "Dragon"
-                        ],
-                        "force": [
-                            "5"
-                        ],
-                        "@SequenceNumber": "0000",
-                        "deck": [
-                            "Dynasty"
-                        ],
-                        "printingprimary": "1",
-                        "chi": [
-                            "5"
-                        ],
-                        "imagehash": "ae/bf",
-                        "title": [
-                            "Goju Hitomi"
-                        ],
-                        "formattedtitle": "Goju Hitomi &#149; Experienced 3KYD",
-                        "printing": [
-                            {
-                                "set": [
-                                    "1,000 Years of Darkness"
-                                ],
-                                "printingid": "1",
-                                "artist": [
-                                    "William O'Connor"
-                                ],
-                                "artnumber": [
-                                    "3048"
-                                ],
-                                "number": [
-                                    "22"
-                                ],
-                                "rarity": [
-                                    "Fixed"
-                                ],
-                                "text": [
-                                    "Hitomi may attach the Obsidian Hand without Gold cost.<br>Hitomi may cast Kihos as though she were a Shugenja. Kihos cast in this way produce Ninja effects instead of Spell effects.<br>Limited: Once per turn, get a Tattoo or Kiho card from your Fate deck and put it in your hand. Shuffle your deck."
-                                ],
-                                "printimagehash": [
-                                    "ae/bf"
-                                ]
-                            }
-                        ],
-                        "text": [
-                            "Attaches The Obsidian Hand ignoring Gold cost.<br>Hitomi may perform Kiho actions as if she were a Shugenja, and when she performs a Kiho action, it is considered a Ninja action instead of a Kiho action when targeting it and resolving its effects.<br><b>Limited:</b> Search your Fate deck for a Tattoo or Kiho Strategy and put it in your hand."
-                        ],
-                        "@timestamp": "2022-05-23T15:37:41.250121",
-                        "cardid": 2850,
-                        "keywords": [
-                            "<b>Experienced 3KYD Mirumoto Hitomi</b>",
-                            "<b>Unique</b>",
-                            "Dragon Clan",
-                            "Ninja",
-                            "Samurai",
-                            "Tattooed"
-                        ],
-                        "ph": [
-                            "1"
-                        ],
-                        "type": [
-                            "Personality"
-                        ],
-                        "honor": [
-                            "-"
-                        ],
-                        "puretexttitle": "Goju Hitomi - exp3KYD",
-                        "cost": [
-                            "15"
-                        ]
-                    },
-                    "sort": [
-                        "Goju Hitomi"
-                    ]
-                },
-    ...
-            ]
-        }
-    }"""
-    query_params = get_query_params(await request.body())
-    logger.info(query_params)
-
-    class Sort(TypedDict):
-        order: Literal["asc", "desc"]
-
-    def get_sort_by(sort: list[dict[str, Sort]]) -> str:
-        string_ = ""
-        for sorter in sort:
-            for key, value in sorter.items():
-                key = key.removesuffix(".keyword")
-
-                string_ += f"{key}:{value['order']},"
-        return string_
-
-    # {'querystring': 'toto', 'table': 'l5r', 'sort': [{'title.keyword': {'order': 'asc'}}], 'size': '50', 'from': '0'}
-    search_query = {
-        "q": query_params["querystring"],
-        "query_by": "formattedtitle",
-        "sort_by": "formattedtitle:asc",
-        "per_page": query_params["size"],
-        "page": query_params["from"],
-    }
+    search_query = get_search_params(await request.body())
 
     search_results = collection.documents.search(search_query)
 
@@ -574,145 +458,6 @@ async def search(request: Request):
             "total": found_elements,
             "max_score": None,
             "hits": [convert(x) for x in hits],
-        },
-    }
-
-    did = {
-        "facet_counts": [],
-        "found": 1,
-        "hits": [
-            {
-                "document": {
-                    "cardid": "TwentyFestivals114",
-                    "chi": ["4"],
-                    "clan": ["Phoenix"],
-                    "cost": ["8"],
-                    "deck": ["Dynasty"],
-                    "force": ["3"],
-                    "formattedtitle": "Agasha Tameko",
-                    "honor": ["4"],
-                    "id": "0",
-                    "imagehash": "ae/bf",
-                    "keywords": [],
-                    "ph": ["2"],
-                    "printing": [
-                        {
-                            "artist": [""],
-                            "artnumber": [""],
-                            "number": ["114"],
-                            "printimagehash": ["ae/bf"],
-                            "printingid": "1",
-                            "rarity": ["Fixed"],
-                            "set": ["Twenty Festivals"],
-                            "text": [""],
-                        }
-                    ],
-                    "printingprimary": "1",
-                    "puretexttitle": "Agasha Tameko",
-                    "text": [
-                        "Commander &#8226; Water &#8226; Shugenja &#8226; Soul of Agasha Tomioko <br><b>Water Interrupt</b>: After the action Equips a Spell to Tameko, take an additional action."
-                    ],
-                    "title": ["Agasha Tameko"],
-                    "type": ["Personality"],
-                },
-                "highlight": {
-                    "formattedtitle": {
-                        "matched_tokens": ["Agasha"],
-                        "snippet": "<mark>Agasha</mark> Tameko",
-                    }
-                },
-                "highlights": [
-                    {
-                        "field": "formattedtitle",
-                        "matched_tokens": ["Agasha"],
-                        "snippet": "<mark>Agasha</mark> Tameko",
-                    }
-                ],
-                "text_match": 578730123365187705,
-                "text_match_info": {
-                    "best_field_score": "1108091338752",
-                    "best_field_weight": 15,
-                    "fields_matched": 1,
-                    "num_tokens_dropped": 0,
-                    "score": "578730123365187705",
-                    "tokens_matched": 1,
-                    "typo_prefix_score": 0,
-                },
-            }
-        ],
-        "out_of": 1,
-        "page": 1,
-        "request_params": {
-            "collection_name": "l5r",
-            "first_q": "Agasha",
-            "per_page": 50,
-            "q": "Agasha",
-        },
-        "search_cutoff": False,
-        "search_time_ms": 0,
-    }
-    breakpoint()
-
-    return {
-        "took": 1,
-        "timed_out": False,
-        "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
-        "hits": {
-            "total": 1,
-            "max_score": None,
-            "hits": [
-                {
-                    "_index": "l5r-addlogupdate2",
-                    "_type": "oracle-l5r_type",
-                    "_id": "cardid=2850.0",
-                    "_score": None,
-                    "_ignored": ["honor"],
-                    "_source": {
-                        "clan": ["Dragon"],
-                        "force": ["5"],
-                        "@SequenceNumber": "0000",
-                        "deck": ["Dynasty"],
-                        "printingprimary": "1",
-                        "chi": ["5"],
-                        "imagehash": "ae/bf",
-                        "title": ["Goju Hitomi"],
-                        "formattedtitle": "Goju Hitomi &#149; Experienced 3KYD",
-                        "printing": [
-                            {
-                                "set": ["1,000 Years of Darkness"],
-                                "printingid": "1",
-                                "artist": ["William O'Connor"],
-                                "artnumber": ["3048"],
-                                "number": ["22"],
-                                "rarity": ["Fixed"],
-                                "text": [
-                                    "Hitomi may attach the Obsidian Hand without Gold cost.<br>Hitomi may cast Kihos as though she were a Shugenja. Kihos cast in this way produce Ninja effects instead of Spell effects.<br>Limited: Once per turn, get a Tattoo or Kiho card from your Fate deck and put it in your hand. Shuffle your deck."
-                                ],
-                                "printimagehash": ["ae/bf"],
-                            }
-                        ],
-                        "text": [
-                            "Attaches The Obsidian Hand ignoring Gold cost.<br>Hitomi may perform Kiho actions as if she were a Shugenja, and when she performs a Kiho action, it is considered a Ninja action instead of a Kiho action when targeting it and resolving its effects.<br><b>Limited:</b> Search your Fate deck for a Tattoo or Kiho Strategy and put it in your hand."
-                        ],
-                        "@timestamp": "2022-05-23T15:37:41.250121",
-                        "cardid": 2850,
-                        "keywords": [
-                            "<b>Experienced 3KYD Mirumoto Hitomi</b>",
-                            "<b>Unique</b>",
-                            "Dragon Clan",
-                            "Ninja",
-                            "Samurai",
-                            "Tattooed",
-                        ],
-                        "ph": ["1"],
-                        "type": ["Personality"],
-                        "honor": ["-"],
-                        "puretexttitle": "Goju Hitomi - exp3KYD",
-                        "cost": ["15"],
-                    },
-                    "sort": ["Goju Hitomi"],
-                },
-            ],
         },
     }
 
