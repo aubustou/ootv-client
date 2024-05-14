@@ -10,6 +10,7 @@ from typing import TypedDict
 import lxml.etree as ET
 import typesense
 
+from .keywords import KEYWORDS
 from .mappings import (
     CLAN_MAPPING,
     DECK_MAPPING,
@@ -126,6 +127,16 @@ def get_printing(xml_item: ET.Element, card_id: str) -> list[dict[str, str]]:
     else:
         rarity = xml_rarity.text
 
+    if (xml_flavor := xml_item.find("flavor")) is not None:
+        flavor = xml_flavor.text
+    else:
+        flavor = ""
+
+    if (xml_artist := xml_item.find("artist")) is not None:
+        artist = xml_artist.text
+    else:
+        artist = ""
+
     printings = []
     for index, xml_printing in enumerate(xml_printings, start=1):
         edition_acronym = xml_printing.attrib["edition"]
@@ -143,12 +154,13 @@ def get_printing(xml_item: ET.Element, card_id: str) -> list[dict[str, str]]:
         printing = {
             "set": [edition],
             "printingid": f"{index }",
-            "artist": [""],
+            "artist": [artist],
             "artnumber": [""],
             "number": [number],
             "rarity": [RARITY_MAPPING[rarity]],
             "text": [""],
             "printimagehash": [f"{edition_acronym}/{number}"],
+            "flavor": [flavor],
         }
         printings.append(printing)
 
@@ -161,26 +173,27 @@ TOKEN_REPLACEMENTS = [
 ]
 PAY_PATTERN = re.compile(r"\[PAY ([\d*]+)\]")
 
+KEPT = set()
+
 
 def convert_text(text: str, card_type: str) -> tuple[str, list[str]]:
-    if card_type in {"Personality", "Sensei"}:
+    global KEPT
+
+    if card_type in {"Holding", "Item", "Personality", "Sensei", "Strategy"}:
         parts = text.split("<br>", maxsplit=1)
         if len(parts) == 2:
             keywords_, text = parts
         else:
-            text = ""
-            keywords_ = parts[0]
+            if card_type in {"Personality", "Sensei"}:
+                keywords_ = parts[0]
+                text = ""
+            else:
+                text = parts[0]
+                keywords_ = ""
         keywords = keywords_.split("&#8226;")
+
     else:
         keywords = []
-
-    for token, replacement in TOKEN_REPLACEMENTS:
-        text = text.replace(token, replacement)
-
-    if "[PAY " in text:
-        text = PAY_PATTERN.sub(r":g\1:", text)
-
-    text = text.strip().removeprefix("<br>").strip()
 
     cleaned_keywords: list[str] = []
     for keyword in keywords:
@@ -190,14 +203,32 @@ def convert_text(text: str, card_type: str) -> tuple[str, list[str]]:
         if keyword:
             cleaned_keywords.append(keyword)
 
+    if card_type in {"Holding", "Strategy", "Item"}:
+        if not any(
+            x in cleaned_keywords
+            for x in KEYWORDS.get(card_type, set()) | KEYWORDS["Generic"]
+        ):
+            text = keywords_ + "<br>" + text
+            cleaned_keywords = []
+        if card_type == "Item":
+            KEPT |= set(cleaned_keywords)
+
+    for token, replacement in TOKEN_REPLACEMENTS:
+        text = text.replace(token, replacement)
+
+    if "[PAY " in text:
+        text = PAY_PATTERN.sub(r":g\1:", text)
+
+    text = text.strip().removeprefix("<br>").strip()
+
     return text, cleaned_keywords
 
 
 def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
     """Convert an XML element into a dictionary. Example with Goju Hitomi"""
     card_type = xml_item.attrib["type"]
-    if card_type not in {"holding", "personality", "sensei"}:
-        return {}
+    # if card_type not in {"holding", "item", "personality", "sensei", "strategy"}:
+    #     return {}
 
     legalities = []
     has_onyx = False
@@ -239,8 +270,10 @@ def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
         "puretexttitle": card_name,
         "deck": [card_deck],
         "text": [text],
-        "keywords": keywords,
     }
+    if keywords:
+        card["keywords"] = keywords
+
     match card_type:
         case "Holding":
             if (xml_gold_production := xml_item.find("gold_production")) is not None:
@@ -250,15 +283,27 @@ def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
 
             card.update(
                 {
-                    "clan": [],
                     "cost": [xml_item.find("cost").text],
                     "production": [gold_production],
                 }
             )
-        case "Personality":
+        case "Item":
             card.update(
                 {
-                    "clan": [CLAN_MAPPING[x.text] for x in xml_item.findall("clan")],
+                    "chi": [xml_item.find("chi").text],
+                    "cost": [xml_item.find("cost").text],
+                    "force": [xml_item.find("force").text],
+                    "focus": [xml_item.find("focus").text],
+                }
+            )
+
+        case "Personality":
+            clans = [CLAN_MAPPING[x.text] for x in xml_item.findall("clan")] or [
+                "Unaligned"
+            ]
+            card.update(
+                {
+                    "clan": clans,
                     "force": [xml_item.find("force").text],
                     "chi": [xml_item.find("chi").text],
                     "ph": [xml_item.find("personal_honor").text],
@@ -279,6 +324,14 @@ def xml_to_dict(xml_item: ET.Element) -> dict[str, str]:
                     "strength": [xml_item.find("province_strength").text],
                 }
             )
+        case "Strategy":
+            card.update(
+                {
+                    "focus": [xml_item.find("focus").text],
+                }
+            )
+            if (xml_cost := xml_item.find("cost")) is not None:
+                card["cost"] = xml_cost.text
 
     return card
 
@@ -437,9 +490,10 @@ def create_collection(documents: ET.tree, overwrite: bool = True) -> None:
                 "name": "cardid",
                 "type": "string",
             },
-            {"name": "keywords", "type": "string[]", "facet": True},
-            {"name": "clan", "type": "string[]", "facet": True},
+            {"name": "keywords", "type": "string[]", "facet": True, "optional": True},
+            {"name": "clan", "type": "string[]", "facet": True, "optional": True},
             {"name": "legality", "type": "string[]", "facet": True},
+            {"name": "deck", "type": "string[]", "facet": True},
             # {"name": "rarity", "type": "string", "facet": True},
             # {"name": "edition", "type": "string", "facet": True},
             # {"name": "image", "type": "string",},
@@ -470,6 +524,8 @@ def create_collection(documents: ET.tree, overwrite: bool = True) -> None:
             logging.info("Document %s created", card_dict["formattedtitle"])
         except typesense.exceptions.ObjectAlreadyExists:
             logging.info("Document %s already exists", card_dict["formattedtitle"])
+
+    logger.info("Holding keywords: %s", KEPT)
 
 
 def main():

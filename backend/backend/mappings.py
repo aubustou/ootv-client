@@ -61,6 +61,7 @@ EXTENSION_MAPPING = {
     "GS": "Gathering Storm",
     "CZE": "Cubic Zirconia Edition",
     "CRI": "Chaos Reigns I",
+    "Promo": "Promo",
 }
 
 RARITY_MAPPING = {
